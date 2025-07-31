@@ -1,0 +1,7 @@
+Package: MyGolemElectronApp
+Type: Package
+Title: My Golem Electron App
+Version: 0.0.0.9000
+Imports:
+    shiny,
+    golem

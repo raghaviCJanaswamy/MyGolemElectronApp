@@ -1,0 +1,23 @@
+{
+  "name": "my-golem-electron",
+  "version": "1.0.0",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "build": "electron-builder",
+    "postinstall": "npm install wait-on"
+  },
+  "dependencies": {
+    "wait-on": "^7.2.0"
+  },
+  "devDependencies": {
+    "electron": "^29.0.0",
+    "electron-builder": "^24.0.0"
+  },
+  "build": {
+    "asarUnpack": [
+      "resources/R.framework/Resources/bin/**",
+      "resources/R.framework/Resources/library/**"
+    ]
+  }
+}
