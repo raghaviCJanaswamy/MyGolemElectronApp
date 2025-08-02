@@ -28,11 +28,11 @@ npm run prod-build
 
 /dist folder contains the dmg to be installed. Launch the app
 
-[Image](docs/image.png)
+![Image](docs/image.png)
 
-[Image1](docs/image-1.png)
+![Image1](docs/image-1.png)
 
-[Image2](docs/image-2.png)
+![Image2](docs/image-2.png)
 
 ---------
 
