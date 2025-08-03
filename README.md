@@ -23,12 +23,25 @@ It bundles the R runtime (`R.framework`) directly in the app, so no external R i
 
 ## Final Run
 
-cd electron
-npm run prod-build
+### Build and deploy
 
-/dist folder contains the dmg to be installed. Launch the app
+  - cd electron  
+  - npm run prod-build
+
+----
+
+  - cd dist
+
+  - /dist folder contains the dmg to be installed. 
+
+  - install .dmg and run the app
+
 
 ![Image](docs/image.png)
+
+  - Launch the app 
+
+
 
 ![Image1](docs/image-1.png)
 
