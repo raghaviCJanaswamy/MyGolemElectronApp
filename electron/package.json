@@ -1,51 +1,65 @@
 {
-  "name": "my-golem-electron",
+  "name": "idepGolemPackage",
   "version": "1.0.0",
-  "description": "Electron wrapper for Golem Shiny app with R.framework bundled",
-  "main": "main.js",
+  "description": "MyGolemElectronApp with bundled R runtime",
+  "private": true,
+  "main": "electron/main.js",
+  "author": "YOUR NAME <you@example.com>",
+  "license": "MIT",
   "scripts": {
-    "start": "electron .",
-    "fix-rframework": "bash scripts/pre_build_fix_rframework.sh",
-    "build": "electron-builder",
-    "prod-build": "npm run fix-rframework && npm run build",
-    "post-build-check": "bash scripts/post_build_check.sh"
-  },
-  "dependencies": {
-    "electron-is-dev": "^2.0.0",
-    "wait-on": "^7.2.0"
+    "dev": "electron .",
+    "build": "electron-builder"
   },
   "devDependencies": {
-    "electron": "^29.0.0",
-    "electron-builder": "^24.0.0"
+    "electron": "^31.0.0",
+    "electron-builder": "24.13.3",
+    "@electron/notarize": "^2.2.0"
+  },
+  "dependencies": {
   },
   "build": {
-    "appId": "com.test.golemapp",
-
-    "mac": {
-      "target": ["dmg", "zip"]
-    },
-    "win": {
-      "target": ["nsis", "zip"]
-    },
-    "linux": {
-      "target": ["AppImage", "deb", "tar.gz"]
+    "appId": "com.example.idepgolem",
+    "productName": "MyGolemElectronApp",
+    "directories": {
+      "output": "release"
     },
 
     "files": [
-      "main.js",
-      "error.html",
-      "resources/**"
+      "dist/**",
+      "electron/**",
+      "package.json"
     ],
-    "extraResources": [
-      {
-        "from": "electron/resources/R.framework",
-        "to": "R.framework"
-      },
-      {
-        "from": "app",
-        "to": "app"
-      }
-    ],
-    "asar": false
+
+  "asar": true,
+  "afterPack": "node scripts/after-pack-fix-perms.js",
+  "afterSign": "node scripts/macos-notarize.js",
+
+
+  "mac": {
+      "target": ["dmg", "zip"],
+      "category": "public.app-category.developer-tools",
+      "hardenedRuntime": true,
+      "entitlements": "entitlements.mac.plist",
+      "entitlementsInherit": "entitlements.mac.plist",
+
+      "extraResources": [
+        {
+          "from": "resources/r-runtime/mac-${arch}",
+          "to": "r-runtime/mac-${arch}",
+          "filter": ["**/*"]
+        }
+      ]
+  },
+
+  "win": {
+      "target": ["nsis"],
+      "extraResources": [
+        {
+          "from": "resources/r-runtime/win-${arch}",
+          "to": "r-runtime/win-${arch}",
+          "filter": ["**/*"]
+        }
+      ]
+  }
   }
 }

@@ -103,3 +103,41 @@ Output:
   3. Open `http://127.0.0.1:4242` in Electron window
 
 ---
+### Debugging
+
+
+Check inside the .app bundle:
+
+tree -L 3 dist/mac/YourApp.app/Contents/Resources
+
+
+You should see:
+
+Resources/
+ ├── app/
+ │   └── run_app.R
+ ├── R.framework/
+ │   ├── Resources/
+ │   │   └── bin/Rscript
+ └── main.js
+
+
+ -----------
+ 
+
+1) Directly from the .app bundle
+
+open dist/mac-arm64/idepGolemPackage.app,  just double–click it in Finder.
+
+2) From the .dmg
+If you built a DMG, open it in Finder → drag the app to /Applications → then launch it from Launchpad.
+
+3) From the command line inside the bundle (for debugging)
+
+dist/mac-arm64/idepGolemPackage.app/Contents/MacOS/idepGolemPackage
+
+
+This way you can see stdout/stderr in your terminal while R starts up.
+
+#### Logs 
+dist/mac-arm64/idepGolemPackage.app/Contents/Resources/golem-electron-debug-<timestamp>.log

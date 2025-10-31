@@ -1,75 +1,24 @@
-library(shiny)
-library(shinythemes)
-library(shinyWidgets)
+#!/usr/bin/env Rscript
 
+args <- commandArgs(trailingOnly = TRUE)
+port <- 7777
+host <- "127.0.0.1"
 
-port <- httpuv::randomPort()
-cat(sprintf("PORT:%d\n", port))
-
-
-if (Sys.getenv("ELECTRON_PROD") == "1") {
-  port <- 12345
-} else {
-  port <- httpuv::randomPort()
+if (length(args) >= 2) {
+  for (i in seq(1, length(args), by = 2)) {
+    if (args[i] == "--port") port <- as.integer(args[i+1])
+    if (args[i] == "--host") host <- args[i+1]
+  }
 }
 
-options(shiny.port = port)
-options(shiny.host = "0.0.0.0")
+suppressPackageStartupMessages({
+  library(shiny)
+})
 
-ui <- navbarPage(
-  title = "Electron + Shiny App",
-  theme = shinytheme("cosmo"),   # Modern Bootstrap theme
+# Path to bundled shiny app inside Resources/app/shiny
+app_dir <- file.path(dirname(normalizePath(sys.frame(1)$ofile)), "shiny")
 
-  tabPanel("Dashboard",
-           fluidRow(
-             column(4,
-                    wellPanel(
-                      pickerInput("dataset", "Choose dataset:",
-                                  choices = c("mtcars", "iris", "diamonds"),
-                                  selected = "mtcars"),
-                      actionButton("refresh", "Refresh Data")
-                    )
-             ),
-             column(8,
-                    tableOutput("dataPreview")
-             )
-           )
-  ),
+message("Starting Shiny app from: ", app_dir)
+message("Listening on http://", host, ":", port)
 
-  tabPanel("Settings",
-           fluidRow(
-             column(6,
-                    sliderInput("slider1", "Adjust Value:",
-                                min = 0, max = 100, value = 50),
-                    switchInput("toggleTheme", "Dark Mode", value = FALSE)
-             )
-           )
-  ),
-
-  tabPanel("About",
-           fluidRow(
-             column(12,
-                    h3("About This App"),
-                    p("This is a modern Shiny app packaged inside Electron."),
-                    p("It uses shinythemes + shinyWidgets for a cleaner UI.")
-             )
-           )
-  )
-)
-
-
-
-server <- function(input, output, session) {
-  output$dataPreview <- renderTable({
-    if (input$dataset == "mtcars") head(mtcars)
-    else if (input$dataset == "iris") head(iris)
-    else head(ggplot2::diamonds)
-  })
-}
-
-shiny::runApp(
-  list(ui = ui, server = server),
-  port = port,
-  host = "0.0.0.0",
-  launch.browser = FALSE
-)
+shiny::runApp(app_dir, host = host, port = port, launch.browser = FALSE)

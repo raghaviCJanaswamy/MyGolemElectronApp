@@ -1,0 +1,114 @@
+name: Build Electron (with vendored R)
+
+on:
+  push:
+    branches: [ feature/electron ]
+    paths:
+      - "electron/**"
+      - "shinygo/**"
+      - "app/**"
+      - "package.json"
+      - ".github/workflows/*.yml"      
+      
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-14
+            node: 20
+            r_version: "4.4.1"
+            mac_arch: "arm64"
+          - os: windows-latest
+            node: 20
+            r_version: "4.4.1"
+            win_arch: "x64"
+
+    runs-on: ${{ matrix.os }}
+
+    # Run all commands inside the electron/ folder
+    defaults:
+      run:
+        working-directory: electron
+
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      # mac notarization (optional)
+      APPLE_ID: ${{ secrets.APPLE_ID }}
+      APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+      APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Use Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}       
+          cache: npm
+          cache-dependency-path: electron/package-lock.json  # <-- lockfile location
+
+      - name: Show tree (debug)
+        shell: bash
+        run: |
+          pwd
+          ls -la
+          echo "Parent:"
+          ls -la ..
+
+      - name: Install npm deps
+        run: npm ci
+
+      - name: Setup R
+        uses: r-lib/actions/setup-r@v2
+        with:
+          r-version: ${{ matrix.r_version }}
+
+      # --- Prepare portable R runtime on macOS ---
+      - name: Prepare R runtime (macOS)
+        if: ${{ startsWith(matrix.os, 'macos-') }}
+        shell: bash
+        run: |
+          set -euxo pipefail
+          mkdir -p "resources/r-runtime/mac-${{ matrix.mac_arch }}"
+          R_HOME="$(R RHOME)"
+          FRAMEWORK_DIR="$(cd "${R_HOME}/.." && pwd -P)"
+          rsync -a --delete "${FRAMEWORK_DIR}/" "resources/r-runtime/mac-${{ matrix.mac_arch }}/R.framework/"
+          rm -rf "resources/r-runtime/mac-${{ matrix.mac_arch }}/R.framework/Resources/doc" || true
+          rm -rf "resources/r-runtime/mac-${{ matrix.mac_arch }}/R.framework/Resources/library/translations" || true
+
+      # --- Prepare portable R runtime on Windows ---
+      - name: Prepare R runtime (Windows)
+        if: ${{ startsWith(matrix.os, 'windows-') }}
+        shell: powershell
+        run: |
+          $ErrorActionPreference = "Stop"
+          New-Item -ItemType Directory -Force -Path "resources\r-runtime\win-${{ matrix.win_arch }}" | Out-Null
+          try {
+            choco install r.portable --version=${{ matrix.r_version }} -y
+            $rDir = Get-ChildItem "$env:ChocolateyInstall\lib\r.portable\tools" -Directory | Sort-Object Name -Descending | Select-Object -First 1
+          } catch {
+            Write-Host "Chocolatey r.portable unavailable; copying from R.home()."
+            $rHome = & R -q -e "cat(R.home())"
+            $rDir = Get-Item $rHome
+          }
+          $dest = "resources\r-runtime\win-${{ matrix.win_arch }}\R-${{ matrix.r_version }}"
+          New-Item -ItemType Directory -Force -Path $dest | Out-Null
+          robocopy "$($rDir.FullName)" "$dest" /E /NFL /NDL /NJH /NJS /NC /NS
+          if ($LASTEXITCODE -ge 8) { exit $LASTEXITCODE }
+          if (Test-Path "$dest\doc") { Remove-Item -Recurse -Force "$dest\doc" }
+
+      - name: Build
+        run: npm run build
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ runner.os }}-artifacts
+          path: electron/release/**/*    # note: path from repo root

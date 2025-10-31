@@ -1,0 +1,9 @@
+.Rproj.user
+.Rhistory
+.RData
+.Ruserdat
+/electron/dist/*
+/electron/node_modules/*
+/electron/electron/*
+/node_modules
+/data113/*
