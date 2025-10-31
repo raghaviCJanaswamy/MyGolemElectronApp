@@ -62,13 +62,22 @@ jobs:
           echo "Parent:"
           ls -la ..
 
-      - name: Install npm deps
-        run: npm ci
+      # runs inside electron/ per your defaults.run.working-directory
+      - name: Install npm deps (prefer ci, fallback to install)
+        shell: bash
+        run: |
+          set -euxo pipefail
+          if [ -f package-lock.json ]; then
+            # try clean, else regenerate lock + install
+            npm ci || (echo "npm ci failed — lockfile out of sync. Falling back to npm install…" \
+              && rm -rf node_modules \
+              && npm install --no-fund --no-audit)
+          else
+            npm install --no-fund --no-audit
+          fi
 
-      - name: Setup R
-        uses: r-lib/actions/setup-r@v2
-        with:
-          r-version: ${{ matrix.r_version }}
+
+
 
       # --- Prepare portable R runtime on macOS ---
       - name: Prepare R runtime (macOS)
@@ -84,25 +93,52 @@ jobs:
           rm -rf "resources/r-runtime/mac-${{ matrix.mac_arch }}/R.framework/Resources/library/translations" || true
 
       # --- Prepare portable R runtime on Windows ---
+
+      # --- Prepare portable R runtime on Windows (no Chocolatey needed) ---
+
+      # --- Prepare portable R runtime on Windows (no Chocolatey) ---
       - name: Prepare R runtime (Windows)
         if: ${{ startsWith(matrix.os, 'windows-') }}
         shell: powershell
         run: |
           $ErrorActionPreference = "Stop"
-          New-Item -ItemType Directory -Force -Path "resources\r-runtime\win-${{ matrix.win_arch }}" | Out-Null
-          try {
-            choco install r.portable --version=${{ matrix.r_version }} -y
-            $rDir = Get-ChildItem "$env:ChocolateyInstall\lib\r.portable\tools" -Directory | Sort-Object Name -Descending | Select-Object -First 1
-          } catch {
-            Write-Host "Chocolatey r.portable unavailable; copying from R.home()."
-            $rHome = & R -q -e "cat(R.home())"
-            $rDir = Get-Item $rHome
-          }
-          $dest = "resources\r-runtime\win-${{ matrix.win_arch }}\R-${{ matrix.r_version }}"
+          $ProgressPreference = "SilentlyContinue"
+
+          # Resolve real executables (avoid PS alias 'r')
+          $rExe    = (Get-Command R.exe -ErrorAction Stop).Source
+          $rscript = (Get-Command Rscript.exe -ErrorAction Stop).Source
+
+          # Query R home and version
+          $rHome = (& $rExe RHOME).Trim()
+          if (-not (Test-Path $rHome)) { throw "R RHOME path not found: $rHome" }
+
+          $rVer = (& $rscript --vanilla -e "cat(getRversion())").Trim()
+          if (-not $rVer) { $rVer = "${{ matrix.r_version }}" }  # fallback
+
+          # Destination like resources\r-runtime\win-x64\R-<actual-version>
+          $destRoot = "resources\r-runtime\win-${{ matrix.win_arch }}"
+          $dest = Join-Path $destRoot ("R-" + $rVer)
           New-Item -ItemType Directory -Force -Path $dest | Out-Null
-          robocopy "$($rDir.FullName)" "$dest" /E /NFL /NDL /NJH /NJS /NC /NS
-          if ($LASTEXITCODE -ge 8) { exit $LASTEXITCODE }
+
+          Write-Host "R HOME: $rHome"
+          Write-Host "R VER : $rVer"
+          Write-Host "DEST  : $dest"
+
+          # Copy R tree
+          robocopy "$rHome" "$dest" /E /NFL /NDL /NJH /NJS /NC /NS
+          $rc = $LASTEXITCODE
+          Write-Host "Robocopy exit code: $rc"
+          if ($rc -ge 8) { exit $rc } else { $global:LASTEXITCODE = 0 }  # normalize success
+
+          # Optional: trim docs to save space
           if (Test-Path "$dest\doc") { Remove-Item -Recurse -Force "$dest\doc" }
+
+
+
+      - name: Setup R
+        uses: r-lib/actions/setup-r@v2
+        with:
+          r-version: ${{ matrix.r_version }}          
 
       - name: Build
         run: npm run build
