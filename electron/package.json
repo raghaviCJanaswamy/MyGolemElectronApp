@@ -1,65 +1,77 @@
 {
   "name": "idepGolemPackage",
   "version": "1.0.0",
-  "description": "MyGolemElectronApp with bundled R runtime",
+  "description": "MyGolemElectronApp with vendored R",
   "private": true,
-  "main": "electron/main.js",
-  "author": "YOUR NAME <you@example.com>",
+  "main": "main.js",
+  "author": "Raghavi C Janaswamy",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/raghaviCJanaswamy/MyGolemElectronApp.git"
+  },  
   "license": "MIT",
   "scripts": {
     "dev": "electron .",
-    "build": "electron-builder"
-  },
-  "devDependencies": {
-    "electron": "^31.0.0",
-    "electron-builder": "24.13.3",
-    "@electron/notarize": "^2.2.0"
+    "build": "electron-builder --win nsis",
+    "dist:win": "electron-builder --win nsis"
   },
   "dependencies": {
+    "cross-spawn": "^7.0.3"
+  },
+  "devDependencies": {
+    "electron": "^32.0.0",
+    "electron-builder": "24.13.3",
+    "@electron/notarize": "^2.2.0"
   },
   "build": {
     "appId": "com.example.idepgolem",
     "productName": "MyGolemElectronApp",
-    "directories": {
-      "output": "release"
-    },
+    "directories": { "output": "release" },
 
     "files": [
-      "dist/**",
-      "electron/**",
-      "package.json"
+      "main.js",
+      "package.json",
+      "dist/**"
     ],
 
-  "asar": true,
-  "afterPack": "node scripts/after-pack-fix-perms.js",
-  "afterSign": "node scripts/macos-notarize.js",
+    "asar": true,
 
+    "extraResources": [
+      { "from": "app", "to": "app" }                              
+    ],
 
-  "mac": {
+    "afterPack": "./scripts/after-pack-fix-perms.js",
+
+    "mac": {
       "target": ["dmg", "zip"],
       "category": "public.app-category.developer-tools",
       "hardenedRuntime": true,
       "entitlements": "entitlements.mac.plist",
       "entitlementsInherit": "entitlements.mac.plist",
-
       "extraResources": [
-        {
-          "from": "resources/r-runtime/mac-${arch}",
-          "to": "r-runtime/mac-${arch}",
-          "filter": ["**/*"]
-        }
+         { "from": "resources/mac-${arch}/R.framework", "to": "R.framework" }
       ]
-  },
+    },
 
-  "win": {
-      "target": ["nsis"],
-      "extraResources": [
+    "win": {
+      "target": [
+        { "target": "nsis", "arch": ["x64"] }
+      ],      
+      "publish": [
         {
-          "from": "resources/r-runtime/win-${arch}",
-          "to": "r-runtime/win-${arch}",
-          "filter": ["**/*"]
+          "provider": "github"
         }
+      ],
+      "extraResources": [
+        { "from": "r-runtime", "to": "r-runtime", "filter": ["**/*"]},
+        { "from": "app",       "to": "app" }
       ]
-  }
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "artifactName": "${productName}-Setup-${version}.exe"
+    }
   }
 }

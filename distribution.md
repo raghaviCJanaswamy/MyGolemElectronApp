@@ -141,3 +141,70 @@ This way you can see stdout/stderr in your terminal while R starts up.
 
 #### Logs 
 dist/mac-arm64/idepGolemPackage.app/Contents/Resources/golem-electron-debug-<timestamp>.log
+
+
+
+## Check the packgage
+
+# 0) Point these to your unpacked build
+
+$UNP = 'C:\raghatest\Windows-artifacts\win-unpacked'
+$base = "$UNP\resources\resources\R-Portable"
+$RS   = if (Test-Path "$base\bin\Rscript.exe") { "$base\bin\Rscript.exe" } else { "$base\bin\x64\Rscript.exe" }
+$lib  = "$base\library"
+
+# 1) Find and verify Rscript.exe
+
+$RS = Get-ChildItem "$base\bin\Rscript*.exe" -Recurse -ErrorAction SilentlyContinue |
+      Select-Object -First 1 -ExpandProperty FullName
+if (-not $RS) { Write-Error "No Rscript.exe under $base"; exit 1 }
+
+Write-Host "Using Rscript: $RS"
+& $RS --version
+if ($LASTEXITCODE -ne 0) { Write-Error "Rscript failed to run"; exit 1 }
+
+#  2) Print hello
+& $RS '--vanilla' '-e' "cat('HELLO\n')". 
+if ($LASTEXITCODE -ne 0) { Write-Error "Rscript -e failed"; exit 1 }
+
+# 2.1 ) CHeck shiny - Print Shiny true
+$lib = "$base\library"
+& $RS '--vanilla' '-e' `
+ "lib <- normalizePath(commandArgs(TRUE)[1], winslash='/', mustWork=FALSE);
+  .libPaths(c(lib, .libPaths()));
+  cat('Has shiny:', requireNamespace('shiny', quietly=TRUE), '\n')" `
+ '--args' $lib
+
+
+# 3.  temp script
+
+$lib = "$base\library"
+
+$rCode = @'
+args <- commandArgs(TRUE)
+lib  <- normalizePath(args[1], winslash="/", mustWork=FALSE)
+.libPaths(c(lib, .libPaths()))
+cat("LIB =", lib, "\n")
+cat("libPaths =", paste(.libPaths(), collapse=" | "), "\n")
+cat("Has shiny:", requireNamespace("shiny", quietly=TRUE), "\n")
+'@
+
+$tf = Join-Path $env:TEMP "check_lib.R"
+$utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+[System.IO.File]::WriteAllText($tf, $rCode, $utf8NoBom)
+
+& $RS '--vanilla' $tf '--args' $lib
+
+
+# 3.2 Final Run Check of R Script
+
+$APP = "$UNP\resources\app\run_app.R"
+
+$env:R_HOME       = $base
+$env:R_LIBS_USER  = "$base\library"
+$env:R_LIBS_SITE  = $env:R_LIBS_USER
+$env:R_ARCH       = "/x64"
+$env:PATH         = "$base\bin;$base\bin\x64;$env:PATH"
+
+& $RS $APP --port 0 --host 127.0.0.1
+

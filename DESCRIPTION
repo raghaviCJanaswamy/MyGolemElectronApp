@@ -1,7 +1,21 @@
 Package: MyGolemElectronApp
 Type: Package
 Title: My Golem Electron App
-Version: 0.0.0.9000
+Version: 0.1.0
+Authors@R: 
+    person("Raghavi", "Janawamy", email = "raghavi.janaswamy@gmail.com", role = c("aut", "cre"))
+Description: A Shiny application packaged with golem for use with an Electron wrapper.
+License: MIT + file LICENSE
+Encoding: UTF-8
+Roxygen: list(markdown = TRUE)
+RoxygenNote: 7.3.2
+Depends:
+    R (>= 4.2)
 Imports:
     shiny,
+    shinythemes,
+    jsonlite,
+    httr,
     golem
+Suggests:
+    testthat (>= 3.0.0)

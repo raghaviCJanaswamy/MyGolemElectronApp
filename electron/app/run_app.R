@@ -1,24 +1,86 @@
 #!/usr/bin/env Rscript
+# run_app.R — robust launcher for Shiny/golem apps (with safe fallback)
 
-args <- commandArgs(trailingOnly = TRUE)
-port <- 7777
-host <- "127.0.0.1"
+# ---- Prefer portable libs from env (vendored runtime) ----
+portable <- unique(c(
+  Sys.getenv("R_LIBS_USER", ""),
+  Sys.getenv("R_LIBS_SITE", ""),
+  Sys.getenv("RENV_PATHS_LIBRARY", "")
+))
+portable <- portable[nzchar(portable)]
+if (length(portable)) .libPaths(unique(c(portable, .libPaths())))
 
-if (length(args) >= 2) {
-  for (i in seq(1, length(args), by = 2)) {
-    if (args[i] == "--port") port <- as.integer(args[i+1])
-    if (args[i] == "--host") host <- args[i+1]
-  }
+# ---- Require shiny, print helpful error if missing ----
+if (!requireNamespace("shiny", quietly = TRUE)) {
+  stop("Package 'shiny' is not installed in the active library.\n",
+       "Active libs: ", paste(.libPaths(), collapse = " | "), call. = FALSE)
 }
 
-suppressPackageStartupMessages({
-  library(shiny)
-})
+# ---- Parse args: --host / --port (defaults) ----
+args <- commandArgs(trailingOnly = TRUE)
+host <- "127.0.0.1"; port <- 7777L
+i <- 1L
+while (i <= length(args)) {
+  if (identical(args[i], "--host") && i < length(args)) { host <- args[i + 1L]; i <- i + 2L; next }
+  if (identical(args[i], "--port") && i < length(args)) { port <- as.integer(args[i + 1L]); i <- i + 2L; next }
+  i <- i + 1L
+}
 
-# Path to bundled shiny app inside Resources/app/shiny
-app_dir <- file.path(dirname(normalizePath(sys.frame(1)$ofile)), "shiny")
+# ---- Find this script's directory reliably ----
+args_all   <- commandArgs(trailingOnly = FALSE)
+file_arg   <- grep("^--file=", args_all, value = TRUE)
+scriptfile <- if (length(file_arg)) sub("^--file=", "", file_arg[1]) else ""
+script_dir <- if (nzchar(scriptfile)) dirname(scriptfile) else getwd()
+script_dir <- normalizePath(script_dir, winslash = "/", mustWork = FALSE)
 
-message("Starting Shiny app from: ", app_dir)
-message("Listening on http://", host, ":", port)
+# ---- Resolve app directory or entrypoint ----
+pick_app_dir <- function(base) {
+  # 1) Explicit override via env APP_SUBDIR
+  subdir <- Sys.getenv("APP_SUBDIR", "")
+  if (nzchar(subdir)) {
+    cand <- file.path(base, subdir)
+    if (dir.exists(cand)) return(cand)
+  }
+  # 2) Common layouts
+  cand <- file.path(base, "shiny");                    if (dir.exists(cand)) return(cand)
+  # Treat base itself as the app if it has app.R or ui/server
+  if (file.exists(file.path(base, "app.R")))           return(base)
+  if (file.exists(file.path(base, "ui.R")) &&
+      file.exists(file.path(base, "server.R")))        return(base)
+  # 3) Nothing obvious
+  return(NA_character_)
+}
 
-shiny::runApp(app_dir, host = host, port = port, launch.browser = FALSE)
+app_dir <- pick_app_dir(script_dir)
+
+# ---- Start app (or safe fallback) ----
+message(sprintf("R: %s", R.version.string))
+message(".libPaths(): ", paste(.libPaths(), collapse = " | "))
+message("Script dir: ", script_dir)
+
+if (!is.na(app_dir)) {
+  message("Launching Shiny app from: ", app_dir)
+  message("Target: http://", host, ":", port)
+  shiny::runApp(appDir = app_dir, host = host, port = port, launch.browser = FALSE)
+} else {
+  # Fallback inline app so it never goes silent
+  message("No app folder found next to run_app.R (looked for 'shiny/', 'app.R', or 'ui.R'+'server.R').")
+  message("Starting fallback test app at http://", host, ":", port)
+  ui <- shiny::fluidPage(
+    shiny::titlePanel("Vendored R Test"),
+    shiny::tags$hr(),
+    shiny::p(sprintf("R: %s", R.version.string)),
+    shiny::p(sprintf(".libPaths(): %s", paste(.libPaths(), collapse = " | "))),
+    shiny::p(sprintf("Host: %s  |  Port: %s", host, port)),
+    shiny::actionButton("ping", "Ping"),
+    shiny::verbatimTextOutput("out")
+  )
+  server <- function(input, output, session) {
+    shiny::observeEvent(input$ping, {
+      output$out <- shiny::renderPrint({
+        list(time = Sys.time(), pid = Sys.getpid(), wd = normalizePath(getwd(), winslash = "/"))
+      })
+    })
+  }
+  shiny::runApp(list(ui = ui, server = server), host = host, port = port, launch.browser = FALSE)
+}

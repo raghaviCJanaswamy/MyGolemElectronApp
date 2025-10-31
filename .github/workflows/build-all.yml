@@ -76,69 +76,305 @@ jobs:
             npm install --no-fund --no-audit
           fi
 
-
-
-
-      # --- Prepare portable R runtime on macOS ---
-      - name: Prepare R runtime (macOS)
-        if: ${{ startsWith(matrix.os, 'macos-') }}
-        shell: bash
+      # --- WINDOWS-ONLY: download, install, make portable tree, install pkgs, verify ---
+      - name: Download R (Windows) with retries & mirror fallback
+        if: ${{ startsWith(matrix.os, 'windows') }}
+        shell: pwsh
+        env:
+          R_VERSION: "4.5.2"
         run: |
-          set -euxo pipefail
-          mkdir -p "resources/r-runtime/mac-${{ matrix.mac_arch }}"
-          R_HOME="$(R RHOME)"
-          FRAMEWORK_DIR="$(cd "${R_HOME}/.." && pwd -P)"
-          rsync -a --delete "${FRAMEWORK_DIR}/" "resources/r-runtime/mac-${{ matrix.mac_arch }}/R.framework/"
-          rm -rf "resources/r-runtime/mac-${{ matrix.mac_arch }}/R.framework/Resources/doc" || true
-          rm -rf "resources/r-runtime/mac-${{ matrix.mac_arch }}/R.framework/Resources/library/translations" || true
+          $ErrorActionPreference = 'Stop'
 
-      # --- Prepare portable R runtime on Windows ---
+          $urls = @(
+            "https://cloud.r-project.org/bin/windows/base/R-$env:R_VERSION-win.exe",
+            "https://cran.r-project.org/bin/windows/base/R-$env:R_VERSION-win.exe",
+            "https://mirror.las.iastate.edu/CRAN/bin/windows/base/R-$env:R_VERSION-win.exe"
+          )
 
-      # --- Prepare portable R runtime on Windows (no Chocolatey needed) ---
+          $out = "R-win.exe"
+          if (Test-Path $out) { Remove-Item $out -Force }
 
-      # --- Prepare portable R runtime on Windows (no Chocolatey) ---
-      - name: Prepare R runtime (Windows)
-        if: ${{ startsWith(matrix.os, 'windows-') }}
-        shell: powershell
+          function TryCurl($u, $o) {
+            Write-Host "curl -> $u"
+            $psi = @{
+              FilePath = "curl.exe"
+              ArgumentList = @("--fail","--location","--retry","5","--retry-delay","5","--retry-connrefused","--connect-timeout","30","-o",$o,$u)
+              Wait = $true
+              NoNewWindow = $true
+            }
+            try {
+              $p = Start-Process @psi -PassThru
+              if ($p.ExitCode -eq 0) { return $true } else { Write-Host "curl exit $($p.ExitCode)"; return $false }
+            } catch { Write-Host "curl exception: $($_.Exception.Message)"; return $false }
+          }
+
+          function TryIwr($u, $o) {
+            Write-Host "Invoke-WebRequest -> $u"
+            $ok = $false
+            for ($i=1; $i -le 5; $i++) {
+              try {
+                Invoke-WebRequest -Uri $u -OutFile $o -TimeoutSec 120
+                $ok = $true
+                break
+              } catch {
+                Write-Host "iwr attempt $i failed: $($_.Exception.Message)"
+                Start-Sleep -Seconds ([Math]::Min(30, 3 * [Math]::Pow(2, $i)))
+              }
+            }
+            return $ok
+          }
+
+          $downloaded = $false
+          foreach ($u in $urls) {
+            if (TryCurl $u $out) { $downloaded = $true; break }
+            if (TryIwr  $u $out) { $downloaded = $true; break }
+          }
+
+          if (-not $downloaded) {
+            Write-Host "Could not download R after trying mirrors/tools."
+            ipconfig
+            nslookup cloud.r-project.org | Out-Host
+            throw "R installer download failed"
+          }
+
+          Write-Host "Downloaded $out (size: $(Get-Item $out).Length bytes)"
+
+      - name: Install R silently to workspace
+        if: ${{ startsWith(matrix.os, 'windows') }}
+        shell: pwsh
         run: |
-          $ErrorActionPreference = "Stop"
-          $ProgressPreference = "SilentlyContinue"
+          $dst = Join-Path $env:GITHUB_WORKSPACE 'r-temp'
+          New-Item -ItemType Directory -Force -Path $dst | Out-Null
+          Start-Process -FilePath .\R-win.exe -ArgumentList '/VERYSILENT','/NORESTART',("/DIR=""$dst""") -Wait
 
-          # Resolve real executables (avoid PS alias 'r')
-          $rExe    = (Get-Command R.exe -ErrorAction Stop).Source
-          $rscript = (Get-Command Rscript.exe -ErrorAction Stop).Source
+      - name: Move portable R into app project (electron/)
+        if: ${{ startsWith(matrix.os, 'windows') }}
+        shell: pwsh
+        run: |
+          function HasRScript($p) {
+            (Test-Path (Join-Path $p 'bin\Rscript.exe')) -or
+            (Test-Path (Join-Path $p 'bin\x64\Rscript.exe'))
+          }
 
-          # Query R home and version
-          $rHome = (& $rExe RHOME).Trim()
-          if (-not (Test-Path $rHome)) { throw "R RHOME path not found: $rHome" }
+          # Candidate roots where R might exist
+          $candidates = @(
+            (Join-Path $env:GITHUB_WORKSPACE 'r-runtime'),
+            (Join-Path $env:GITHUB_WORKSPACE 'electron\r-runtime'),
+            (Join-Path $env:GITHUB_WORKSPACE 'r-temp'),
+            (Join-Path $env:GITHUB_WORKSPACE 'electron\r-temp')
+          ) | Where-Object { Test-Path $_ }
 
-          $rVer = (& $rscript --vanilla -e "cat(getRversion())").Trim()
-          if (-not $rVer) { $rVer = "${{ matrix.r_version }}" }  # fallback
+          if (-not $candidates -or $candidates.Count -eq 0) {
+            Write-Host "No r-runtime/r-temp folders found. Listing workspace (depth 2) for clues:"
+            Get-ChildItem -Recurse -Depth 2 $env:GITHUB_WORKSPACE | Select-Object FullName
+            throw "No portable R tree to copy."
+          }
 
-          # Destination like resources\r-runtime\win-x64\R-<actual-version>
-          $destRoot = "resources\r-runtime\win-${{ matrix.win_arch }}"
-          $dest = Join-Path $destRoot ("R-" + $rVer)
-          New-Item -ItemType Directory -Force -Path $dest | Out-Null
+          # Find a candidate that actually contains Rscript.exe
+          $srcRoot = $null
+          foreach ($c in $candidates) {
+            if (HasRScript $c) { $srcRoot = $c; break }
+            # If the candidate is a parent (e.g., r-temp), check its immediate children
+            $child = Get-ChildItem -Directory $c -ErrorAction SilentlyContinue |
+                    Where-Object { HasRScript $_.FullName } |
+                    Select-Object -First 1
+            if ($child) { $srcRoot = $child.FullName; break }
+          }
 
-          Write-Host "R HOME: $rHome"
-          Write-Host "R VER : $rVer"
-          Write-Host "DEST  : $dest"
+          if (-not $srcRoot) {
+            Write-Host "Could not find a folder containing bin\Rscript.exe."
+            Write-Host "Candidates checked:"
+            $candidates | ForEach-Object { $_ }
+            Write-Host "r-temp quick listing (if present):"
+            if (Test-Path (Join-Path $env:GITHUB_WORKSPACE 'r-temp')) {
+              Get-ChildItem -Recurse -Depth 2 (Join-Path $env:GITHUB_WORKSPACE 'r-temp') | Select-Object FullName
+            }
+            throw "Portable R not found."
+          }
 
-          # Copy R tree
-          robocopy "$rHome" "$dest" /E /NFL /NDL /NJH /NJS /NC /NS
-          $rc = $LASTEXITCODE
-          Write-Host "Robocopy exit code: $rc"
-          if ($rc -ge 8) { exit $rc } else { $global:LASTEXITCODE = 0 }  # normalize success
+          Write-Host "Found portable R at: $srcRoot"
+          $dst = Join-Path $env:GITHUB_WORKSPACE 'electron\r-runtime'
+          if (Test-Path $dst) { Remove-Item -Recurse -Force $dst }
+          Copy-Item -Recurse -Force $srcRoot $dst
 
-          # Optional: trim docs to save space
-          if (Test-Path "$dest\doc") { Remove-Item -Recurse -Force "$dest\doc" }
+          # Sanity check
+          if (Test-Path (Join-Path $dst 'bin\x64\Rscript.exe')) {
+            & (Join-Path $dst 'bin\x64\Rscript.exe') --version
+          } elseif (Test-Path (Join-Path $dst 'bin\Rscript.exe')) {
+            & (Join-Path $dst 'bin\Rscript.exe') --version
+          } else {
+            throw "Copied r-runtime but Rscript.exe not found at $dst\bin"
+          }
 
+
+
+      - name: Make portable R tree (robust)
+        if: ${{ startsWith(matrix.os, 'windows') }}
+        shell: pwsh
+        run: |
+          $dst = Join-Path $env:GITHUB_WORKSPACE 'r-temp'
+          $portable = Join-Path $env:GITHUB_WORKSPACE 'r-runtime'
+          if (Test-Path $portable) { Remove-Item -Recurse -Force $portable }
+
+          function HasRScript($p) {
+            (Test-Path (Join-Path $p 'bin\Rscript.exe')) -or
+            (Test-Path (Join-Path $p 'bin\x64\Rscript.exe'))
+          }
+
+          $root = $null
+          if (HasRScript $dst) {
+            $root = $dst
+          } else {
+            $cand = Get-ChildItem -Directory $dst -ErrorAction SilentlyContinue |
+                    Where-Object { HasRScript $_.FullName } |
+                    Select-Object -First 1
+            if ($cand) { $root = $cand.FullName }
+          }
+
+          if (-not $root) {
+            Write-Host "Contents of $($dst):"
+            Get-ChildItem -Recurse -Depth 2 $dst -ErrorAction SilentlyContinue | Select-Object FullName
+            throw "Could not find an R runtime under $($dst) (no bin\Rscript.exe found)."
+          }
+
+          Write-Host "Using R root: $($root)"
+          Copy-Item -Recurse -Force $root $portable
+
+          $rscript = if (Test-Path (Join-Path $portable 'bin\x64\Rscript.exe')) {
+            Join-Path $portable 'bin\x64\Rscript.exe'
+          } elseif (Test-Path (Join-Path $portable 'bin\Rscript.exe')) {
+            Join-Path $portable 'bin\Rscript.exe'
+          } else {
+            throw "After copy, Rscript not found under $($portable)\bin"
+          }
+
+          & $rscript --version
+
+
+
+      - name: Install R packages into portable library (args, no backslashes in R strings)
+        if: ${{ startsWith(matrix.os, 'windows') }}
+        shell: pwsh
+        env:
+          CRAN_MIRROR: https://cloud.r-project.org
+        run: |
+          $rhome   = Join-Path $env:GITHUB_WORKSPACE 'r-runtime'
+          $rscript = if (Test-Path (Join-Path $rhome 'bin\x64\Rscript.exe')) {
+            Join-Path $rhome 'bin\x64\Rscript.exe'
+          } else {
+            Join-Path $rhome 'bin\Rscript.exe'
+          }
+
+          $libDir = Join-Path $rhome 'library'
+          $lines = @(
+            'args <- commandArgs(trailingOnly = TRUE)',
+            'lib  <- normalizePath(args[[1]], winslash = "/", mustWork = FALSE)',
+            'if (!dir.exists(lib)) dir.create(lib, recursive = TRUE)',
+            '.libPaths(lib)',
+            'options(repos = Sys.getenv("CRAN_MIRROR", "https://cran.r-project.org"))',
+            'install.packages(c("jsonlite","httr"), lib = lib)',
+            'cat("LIB=", lib, "\n")',
+            'q(status = 0)'
+          )
+          $tmp = Join-Path $env:RUNNER_TEMP 'setup-r-libs.R'
+          $lines -join "`n" | Set-Content -Encoding UTF8 $tmp
+
+          # Pass the Windows path as an ARG (R will not parse backslashes from a quoted literal)
+          & $rscript --vanilla $tmp $libDir
+
+      - name: Install DESCRIPTION deps into packaged portable lib
+        if: ${{ startsWith(matrix.os, 'windows') }}
+        shell: pwsh
+        env:
+          CRAN_MIRROR: https://cloud.r-project.org
+        run: |
+          $rhome  = Join-Path $env:GITHUB_WORKSPACE 'electron\r-runtime'
+          $rscript = if (Test-Path (Join-Path $rhome 'bin\x64\Rscript.exe')) {
+            Join-Path $rhome 'bin\x64\Rscript.exe'
+          } else {
+            Join-Path $rhome 'bin\Rscript.exe'
+          }
+          $libDir = Join-Path $rhome 'library'
+
+          $desc = @(
+            (Join-Path $env:GITHUB_WORKSPACE 'shinygo\DESCRIPTION'),
+            (Join-Path $env:GITHUB_WORKSPACE 'DESCRIPTION'),
+            (Join-Path $env:GITHUB_WORKSPACE 'electron\DESCRIPTION')
+          ) | Where-Object { Test-Path $_ } | Select-Object -First 1
+
+          if (-not $desc) {
+            Write-Host "No DESCRIPTION found. Showing a few matches:"
+            Get-ChildItem -Recurse -Filter DESCRIPTION $env:GITHUB_WORKSPACE -ErrorAction SilentlyContinue | Select-Object -First 10 FullName
+            throw "Add your DESCRIPTION path to the candidates above."
+          }
+
+          $lines = @(
+            'args <- commandArgs(trailingOnly = TRUE)',
+            'lib  <- normalizePath(args[[1]], winslash = "/", mustWork = FALSE)',
+            'desc <- normalizePath(args[[2]], winslash = "/", mustWork = TRUE)',
+            'if (!dir.exists(lib)) dir.create(lib, recursive = TRUE)',
+            # Make portable library first in the search path and target for installs
+            '.libPaths(unique(c(lib, .libPaths())))',
+            'Sys.setenv(R_LIBS_USER = lib, R_LIBS_SITE = lib)',
+            'options(repos = Sys.getenv("CRAN_MIRROR", "https://cran.r-project.org"), Ncpus = max(1L, parallel::detectCores() - 1L))',
+            'message("libPaths now: ", paste(.libPaths(), collapse=" | "))',
+            'message("DESCRIPTION: ", desc)',
+            'if (!requireNamespace("remotes", quietly = TRUE)) install.packages("remotes", lib = lib, dependencies = TRUE, quiet = TRUE)',
+            # If you need Bioconductor deps, uncomment:
+            # 'if (!requireNamespace("BiocManager", quietly = TRUE)) install.packages("BiocManager", lib = lib, dependencies = TRUE, quiet = TRUE)',
+            # 'BiocManager::repositories()',
+            'pkgdir <- dirname(desc)',
+            'remotes::install_deps(pkgdir = pkgdir, dependencies = TRUE, upgrade = "never", lib = lib, quiet = TRUE)',
+            'ip <- installed.packages(lib.loc = lib, noCache = TRUE)[,c("Package","Version")]',
+            'message("Installed (first 20):"); print(head(ip, 20))',
+            'q(status = 0)'
+          )
+
+          $tmp = Join-Path $env:RUNNER_TEMP 'install-desc-deps.R'
+          $lines -join "`n" | Set-Content -Encoding UTF8 $tmp
+
+          & $rscript --vanilla $tmp $libDir $desc
+
+      - name: Verify shiny in vendored runtime (Windows)
+        if: ${{ startsWith(matrix.os, 'windows') }}
+        shell: pwsh
+        run: |
+          $rhome   = Join-Path $PWD 'r-runtime'     # <- electron\r-runtime
+          if (-not (Test-Path $rhome)) {
+            Write-Host "r-runtime not found at $rhome. Listing electron/:"
+            Get-ChildItem -Recurse -Depth 2 $PWD | Select-Object FullName
+            throw "portable runtime missing"
+          }
+
+          $rscript = if (Test-Path (Join-Path $rhome 'bin\x64\Rscript.exe')) {
+            Join-Path $rhome 'bin\x64\Rscript.exe'
+          } else {
+            Join-Path $rhome 'bin\Rscript.exe'
+          }
+          $lib = Join-Path $rhome 'library'
+
+          $rCheck = @(
+            'lib <- normalizePath(commandArgs(TRUE)[1], winslash="/", mustWork=FALSE)',
+            'cat("Checking library at:", lib, "\n")',
+            '.libPaths(c(lib, .libPaths()))',
+            'print(.libPaths())',
+            'ok <- requireNamespace("shiny", quietly=TRUE)',
+            'if (!ok) {',
+            '  cat("shiny not found. Installed packages (first 20):\n")',
+            '  print(head(installed.packages(lib.loc = lib, noCache = TRUE)[,c("Package","Version")], 20))',
+            '  q(status = 1)',
+            '} else { cat("shiny is available.\n"); q(status = 0) }'
+          ) -join "`n"
+
+          $tf = Join-Path $env:RUNNER_TEMP "check_lib.R"
+          [System.IO.File]::WriteAllText($tf, $rCheck, (New-Object System.Text.UTF8Encoding($false)))
+          & $rscript '--vanilla' $tf '--args' $lib
 
 
       - name: Setup R
         uses: r-lib/actions/setup-r@v2
         with:
-          r-version: ${{ matrix.r_version }}          
+          r-version: '4.4.1'        
 
       - name: Build
         run: npm run build
