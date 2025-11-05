@@ -34,7 +34,7 @@
       "dist/**"
     ],
 
-    "asar": true,
+    "asar": false,
 
     "extraResources": [
       { "from": "app", "to": "app" }                              

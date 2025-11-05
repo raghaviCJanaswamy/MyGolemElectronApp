@@ -25,32 +25,41 @@ let logPath;
 })();
 const log = (m) => { try { fs.appendFileSync(logPath, `[${new Date().toISOString()}] ${m}\n`); } catch {} };
 
-function safeQuit() {
+// ---- changed: add isQuitting guard and use app.exit instead of app.quit ----
+let isQuitting = false;
+function safeQuit(code = 0) {
+  if (isQuitting) return;            // prevent re-entry
+  isQuitting = true;
+
   try {
     if (rProc && !rProc.killed) {
       rProc.kill('SIGTERM');
       log('Killed R process with SIGTERM');
     }
-  } catch (e) { log(`Kill error: ${e}`); }
-  app.quit();
+  } catch (e) {
+    log(`Kill error: ${e}`);
+  }
+
+  // IMPORTANT: app.exit() bypasses before-quit/quit/window-all-closed handlers,
+  // avoiding recursive quit loops.
+  try {
+    log(`Calling app.exit(${code})`);
+    app.exit(code);
+  } catch (e) {
+    log(`app.exit error: ${e}`);
+    process.exit(code);
 }
+}
+// ---------------------------------------------------------------------------
 
 // ---------- find vendored/system Rscript ----------
 function preferRscript() {
   const resPath = process.resourcesPath || '.';
   log(`resourcesPath: ${resPath}`);
 
-  // Our packaging convention:
-  //   extraResources:
-  //     - from: r-runtime  -> .../resources/r-runtime
-  //     - from: app        -> .../resources/app (contains run_app.R)
-  //
-  // So R lives under: <resourcesPath>/r-runtime
   const vendoredBase = path.join(resPath, 'r-runtime');
 
   if (process.platform === 'darwin') {
-    // If you vendored the official framework, keep this (optional).
-    // Otherwise, prefer our unified r-runtime layout.
     const frameworkR = path.join(resPath, 'R.framework', 'Resources', 'bin', 'Rscript');
     log(`probe mac(framework): ${frameworkR} -> ${fs.existsSync(frameworkR)}`);
     if (fs.existsSync(frameworkR)) return frameworkR;
@@ -85,44 +94,37 @@ function preferRscript() {
 }
 
 async function createWindow() {
-  // IMPORTANT: put run_app.R into extraResources under "app/run_app.R"
   const rScriptFile = isDev
-    ? path.join(__dirname, 'app', 'run_app.R') // dev repo layout
-    : path.join(process.resourcesPath, 'app', 'run_app.R'); // unpacked, accessible to R
+    ? path.join(__dirname, 'app', 'run_app.R')
+    : path.join(process.resourcesPath, 'app', 'run_app.R');
 
   const rPath = preferRscript();
   log(`Rscript Path: ${rPath}`);
   log(`run_app.R: ${rScriptFile}`);
 
-  // fail fast if vendored binary was expected but missing
   if (!isDev && !fs.existsSync(rPath)) {
-    const base = path.dirname(path.dirname(rPath)); // .../r-runtime/bin[/x64]
+    const base = path.dirname(path.dirname(rPath));
     let listing = '(bin folder missing)';
     const binDir = path.dirname(rPath);
     try { listing = fs.existsSync(binDir) ? fs.readdirSync(binDir).join('\n') : listing; } catch {}
     const msg = `Rscript not found at:\n${rPath}\n\nBin listing:\n${listing}\n\nExpected r-runtime base:\n${base}`;
       log(msg);
       dialog.showErrorBox('Rscript not found', msg);
-      return safeQuit();
+    return safeQuit(1);
     }
 
   if (!fs.existsSync(rScriptFile)) {
     const msg = `run_app.R not found at:\n${rScriptFile}\n\nPlace it under extraResources "app/run_app.R".`;
     log(msg);
     dialog.showErrorBox('Missing run_app.R', msg);
-    return safeQuit();
+    return safeQuit(1);
   }
 
-  // Shiny prints a few variants; support "Listening on ..." and "Running on ..."
   const urlRegex = /(Listening|Running)\s+on\s+(https?:\/\/[0-9.:]+(?:\/[^\s]*)?)/i;
-
-  // Prefer ephemeral port; you can pin if you want
   const rArgs = [rScriptFile, '--port', '0', '--host', '127.0.0.1'];
 
-  // Environment for child process
   const extraEnv = {};
   if (!isDev && process.platform === 'darwin') {
-    // If using the framework layout
     const frameworkHome = path.join(process.resourcesPath, 'R.framework', 'Resources');
     const unifiedHome = path.join(process.resourcesPath, 'r-runtime');
     if (fs.existsSync(frameworkHome)) {
@@ -143,7 +145,6 @@ async function createWindow() {
       path.join(base, 'bin'),
       process.env.PATH || ''
     ].join(path.delimiter);
-    // Use bundled packages if present
     extraEnv.R_LIBS_USER = path.join(base, 'library');
     extraEnv.R_LIBS_SITE = extraEnv.R_LIBS_USER;
     extraEnv.R_ARCH = '/x64';
@@ -168,7 +169,7 @@ async function createWindow() {
   } catch (err) {
     log(`Failed to spawn R: ${err}`);
     dialog.showErrorBox('Rscript Error', `Could not start Rscript.\n${String(err)}`);
-    return safeQuit();
+    return safeQuit(1);
   }
 
   let targetURL = null;
@@ -176,7 +177,7 @@ async function createWindow() {
   rProc.on('error', (e) => {
     log(`R process error: ${e?.message || e}`);
     dialog.showErrorBox('Rscript Spawn Error', String(e));
-    safeQuit();
+    safeQuit(1);
   });
 
   rProc.stdout.on('data', (buf) => {
@@ -184,8 +185,7 @@ async function createWindow() {
     log(`R stdout: ${s.trim()}`);
     const m = s.match(urlRegex);
     if (m && !targetURL) {
-      targetURL = m[2]; // the URL
-      log(`Detected URL: ${targetURL}`);
+      targetURL = m[2];
 
       win = new BrowserWindow({
         width: 1200,
@@ -195,27 +195,40 @@ async function createWindow() {
 
       win.loadURL(targetURL).catch(err => {
         dialog.showErrorBox('Load Failed', `Could not load ${targetURL}\n${err?.message || err}`);
-        safeQuit();
+        safeQuit(1);
       });
 
-      win.on('closed', () => safeQuit());
+      // optional: only exit the whole app if the R process has already died
+      win.on('closed', () => safeQuit(0));
     }
   });
 
   rProc.stderr.on('data', d => log(`R stderr: ${d.toString().trim()}`));
-  rProc.on('close', code => { log(`R exited with code ${code}`); safeQuit(); });
+  rProc.on('close', code => { log(`R exited with code ${code}`); safeQuit(code || 0); });
 
-  // allow more time while debugging; adjust as needed
   setTimeout(() => {
     if (!targetURL) {
       log('Timeout: Shiny did not start in 120s');
       dialog.showErrorBox('Startup Timeout', `App did not print "Listening on ..." in time.\nSee log: ${logPath}`);
       try { if (rProc && !rProc.killed) rProc.kill('SIGTERM'); } catch {}
-      safeQuit();
+      safeQuit(1);
     }
   }, 120000);
 }
 
 app.whenReady().then(createWindow);
-app.on('window-all-closed', () => { if (process.platform !== 'darwin') safeQuit(); });
-app.on('before-quit', () => safeQuit());
+
+// ---- changed: do NOT call safeQuit from before-quit; just mark intent ----
+app.on('before-quit', () => { isQuitting = true; });
+
+// ---- changed: use safeQuit (which uses app.exit), avoid app.quit loops ----
+app.on('window-all-closed', () => {
+  if (process.platform !== 'darwin') safeQuit(0);
+});
+
+// (optional) recreate on macOS when dock icon is clicked
+app.on('activate', () => {
+  if (BrowserWindow.getAllWindows().length === 0 && !isQuitting) {
+    createWindow();
+  }
+});
