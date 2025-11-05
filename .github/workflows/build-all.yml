@@ -1,4 +1,4 @@
-name: Build Sample Golem Electron App
+name: Golem Electron App - Description FILE Test
 
 on:
   push:
@@ -20,10 +20,10 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: macos-14
-            node: 20
-            r_version: "4.4.1"
-            mac_arch: "arm64"
+          # - os: macos-14
+          #   node: 20
+          #   r_version: "4.4.1"
+          #   mac_arch: "arm64"
           - os: windows-latest
             node: 20
             r_version: "4.4.1"
@@ -38,10 +38,11 @@ jobs:
 
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      GITHUB_PAT: ${{ secrets.GITHUB_TOKEN }} 
       # mac notarization (optional)
-      APPLE_ID: ${{ secrets.APPLE_ID }}
-      APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
-      APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+      # APPLE_ID: ${{ secrets.APPLE_ID }}
+      # APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+      # APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
 
     steps:
       - name: Checkout
@@ -296,44 +297,59 @@ jobs:
           }
           $libDir = Join-Path $rhome 'library'
 
-          $desc = @(
-            (Join-Path $env:GITHUB_WORKSPACE 'shinygo\DESCRIPTION'),
-            (Join-Path $env:GITHUB_WORKSPACE 'DESCRIPTION'),
-            (Join-Path $env:GITHUB_WORKSPACE 'electron\DESCRIPTION')
-          ) | Where-Object { Test-Path $_ } | Select-Object -First 1
+          # Pick the package dir (folder that CONTAINS DESCRIPTION)
+          $pkgdir = @(
+            (Join-Path $env:GITHUB_WORKSPACE 'mygolemelectronapp'),  # adjust if needed
+            (Join-Path $env:GITHUB_WORKSPACE '.'),                   # repo root
+            (Join-Path $env:GITHUB_WORKSPACE 'electron')             # fallback
+          ) | Where-Object { Test-Path (Join-Path $_ 'DESCRIPTION') } | Select-Object -First 1
 
-          if (-not $desc) {
-            Write-Host "No DESCRIPTION found. Showing a few matches:"
+          if (-not $pkgdir) {
+            Write-Host "No DESCRIPTION found. Some candidates in workspace:"
             Get-ChildItem -Recurse -Filter DESCRIPTION $env:GITHUB_WORKSPACE -ErrorAction SilentlyContinue | Select-Object -First 10 FullName
-            throw "Add your DESCRIPTION path to the candidates above."
+            throw "Cannot locate a package directory that contains DESCRIPTION."
           }
 
           $lines = @(
-            'args <- commandArgs(trailingOnly = TRUE)',
-            'lib  <- normalizePath(args[[1]], winslash = "/", mustWork = FALSE)',
-            'desc <- normalizePath(args[[2]], winslash = "/", mustWork = TRUE)',
-            'if (!dir.exists(lib)) dir.create(lib, recursive = TRUE)',
-            # Make portable library first in the search path and target for installs
+            'args   <- commandArgs(trailingOnly = TRUE)',
+            'lib    <- normalizePath(args[[1]], winslash = "/", mustWork = FALSE)',
+            'pkgdir <- normalizePath(args[[2]], winslash = "/", mustWork = TRUE)',
+            'dir.create(lib, showWarnings = FALSE, recursive = TRUE)',
             '.libPaths(unique(c(lib, .libPaths())))',
-            'Sys.setenv(R_LIBS_USER = lib, R_LIBS_SITE = lib)',
-            'options(repos = Sys.getenv("CRAN_MIRROR", "https://cran.r-project.org"), Ncpus = max(1L, parallel::detectCores() - 1L))',
-            'message("libPaths now: ", paste(.libPaths(), collapse=" | "))',
-            'message("DESCRIPTION: ", desc)',
-            'if (!requireNamespace("remotes", quietly = TRUE)) install.packages("remotes", lib = lib, dependencies = TRUE, quiet = TRUE)',
-            # If you need Bioconductor deps, uncomment:
-            # 'if (!requireNamespace("BiocManager", quietly = TRUE)) install.packages("BiocManager", lib = lib, dependencies = TRUE, quiet = TRUE)',
-            # 'BiocManager::repositories()',
-            'pkgdir <- dirname(desc)',
-            'remotes::install_deps(pkgdir = pkgdir, dependencies = TRUE, upgrade = "never", lib = lib, quiet = TRUE)',
+            'Sys.setenv(R_LIBS_USER = lib, R_LIBS_SITE = lib, GITHUB_PAT = Sys.getenv("GITHUB_PAT", Sys.getenv("GH_TOKEN", "")))',
+            'if (!requireNamespace("BiocManager", quietly = TRUE)) install.packages("BiocManager", repos = Sys.getenv("CRAN_MIRROR","https://cloud.r-project.org"), lib = lib, quiet = TRUE)',
+            'options(repos = BiocManager::repositories(), Ncpus = max(1L, parallel::detectCores() - 1L))',
+            'if (!requireNamespace("remotes", quietly = TRUE)) install.packages("remotes", lib = lib, quiet = TRUE)',
+            'if (!requireNamespace("desc", quietly = TRUE)) install.packages("desc", lib = lib, quiet = TRUE)',
+
+            '# --- Diagnose DESCRIPTION before install ---',
+            'desc_file <- file.path(pkgdir, "DESCRIPTION")',
+            'cat("Using DESCRIPTION at: ", desc_file, "\n", sep = "")',
+            'stopifnot(file.exists(desc_file))',
+            'ok <- tryCatch(desc::desc_validate(pkgdir), error = identity)',
+            'if (inherits(ok, "error")) stop("desc_validate error: ", conditionMessage(ok))',
+            'deps <- desc::desc_get_deps(pkgdir)',
+            'print(deps)',
+            'bad <- subset(deps, is.na(package) | package == "")',
+            'if (nrow(bad)) stop("Malformed dependency entries (blank/NA package names) found in DESCRIPTION.\\n",
+                                  paste(capture.output(print(bad)), collapse = "\\n"))',
+
+            '# --- Install deps (avoid Suggests to reduce churn) ---',
+            'remotes::install_deps(pkgdir = pkgdir, dependencies = c("Depends","Imports","LinkingTo"),',
+            '                      upgrade = "never", lib = lib, quiet = FALSE)',
+
+            'cat("\\nActive .libPaths():\\n"); print(.libPaths())',
             'ip <- installed.packages(lib.loc = lib, noCache = TRUE)[,c("Package","Version")]',
-            'message("Installed (first 20):"); print(head(ip, 20))',
+            'cat("\\nInstalled (first 25):\\n"); print(head(ip[order(ip[,"Package"]),], 25))',
             'q(status = 0)'
           )
 
-          $tmp = Join-Path $env:RUNNER_TEMP 'install-desc-deps.R'
+          $tmp = Join-Path $env:RUNNER_TEMP 'install-deps-validated.R'
           $lines -join "`n" | Set-Content -Encoding UTF8 $tmp
 
-          & $rscript --vanilla $tmp $libDir $desc
+          & $rscript --vanilla $tmp $libDir $pkgdir
+
+
 
       - name: Verify shiny in vendored runtime (Windows)
         if: ${{ startsWith(matrix.os, 'windows') }}

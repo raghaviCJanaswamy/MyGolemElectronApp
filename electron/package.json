@@ -33,26 +33,11 @@
       "package.json",
       "dist/**"
     ],
-
     "asar": false,
-
     "extraResources": [
       { "from": "app", "to": "app" }                              
     ],
-
     "afterPack": "./scripts/after-pack-fix-perms.js",
-
-    // "mac": {
-    //   "target": ["dmg", "zip"],
-    //   "category": "public.app-category.developer-tools",
-    //   "hardenedRuntime": true,
-    //   "entitlements": "entitlements.mac.plist",
-    //   "entitlementsInherit": "entitlements.mac.plist",
-    //   "extraResources": [
-    //      { "from": "resources/mac-${arch}/R.framework", "to": "R.framework" }
-    //   ]
-    // },
-
     "win": {
       "target": [
         { "target": "nsis", "arch": ["x64"] }
