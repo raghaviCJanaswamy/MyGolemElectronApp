@@ -1,11 +1,11 @@
-name: Build Electron (with vendored R)
+name: Build Sample Golem Electron App
 
 on:
   push:
-    branches: [ feature/electron ]
+    branches: [ feature/description-test ]
     paths:
       - "electron/**"
-      - "shinygo/**"
+      - "mygolemelectronapp/**"
       - "app/**"
       - "package.json"
       - ".github/workflows/*.yml"      
