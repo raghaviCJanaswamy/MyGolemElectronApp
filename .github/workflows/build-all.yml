@@ -283,13 +283,11 @@ jobs:
           # Pass the Windows path as an ARG (R will not parse backslashes from a quoted literal)
           & $rscript --vanilla $tmp $libDir
 
-      - name: Install DESCRIPTION deps into packaged portable lib
+      - name: Install DESCRIPTION deps into packaged portable lib (binary-only)
         if: ${{ startsWith(matrix.os, 'windows') }}
         shell: pwsh
-        env:
-          CRAN_MIRROR: https://cloud.r-project.org
         run: |
-          $rhome  = Join-Path $env:GITHUB_WORKSPACE 'electron\r-runtime'
+          $rhome   = Join-Path $env:GITHUB_WORKSPACE 'electron\r-runtime'
           $rscript = if (Test-Path (Join-Path $rhome 'bin\x64\Rscript.exe')) {
             Join-Path $rhome 'bin\x64\Rscript.exe'
           } else {
@@ -297,15 +295,15 @@ jobs:
           }
           $libDir = Join-Path $rhome 'library'
 
-          # Pick the package dir (folder that CONTAINS DESCRIPTION)
+          # Folder that CONTAINS DESCRIPTION (change if your DESCRIPTION lives elsewhere)
           $pkgdir = @(
-            (Join-Path $env:GITHUB_WORKSPACE 'mygolemelectronapp'),  # adjust if needed
-            (Join-Path $env:GITHUB_WORKSPACE '.'),                   # repo root
-            (Join-Path $env:GITHUB_WORKSPACE 'electron')             # fallback
+            (Join-Path $env:GITHUB_WORKSPACE 'mygolemelectronapp'),
+            (Join-Path $env:GITHUB_WORKSPACE '.'),
+            (Join-Path $env:GITHUB_WORKSPACE 'electron')
           ) | Where-Object { Test-Path (Join-Path $_ 'DESCRIPTION') } | Select-Object -First 1
 
           if (-not $pkgdir) {
-            Write-Host "No DESCRIPTION found. Some candidates in workspace:"
+            Write-Host "No DESCRIPTION found. Some candidates:"
             Get-ChildItem -Recurse -Filter DESCRIPTION $env:GITHUB_WORKSPACE -ErrorAction SilentlyContinue | Select-Object -First 10 FullName
             throw "Cannot locate a package directory that contains DESCRIPTION."
           }
@@ -314,40 +312,57 @@ jobs:
             'args   <- commandArgs(trailingOnly = TRUE)',
             'lib    <- normalizePath(args[[1]], winslash = "/", mustWork = FALSE)',
             'pkgdir <- normalizePath(args[[2]], winslash = "/", mustWork = TRUE)',
-            'dir.create(lib, showWarnings = FALSE, recursive = TRUE)',
+            'dir.create(lib, recursive = TRUE, showWarnings = FALSE)',
             '.libPaths(unique(c(lib, .libPaths())))',
-            'Sys.setenv(R_LIBS_USER = lib, R_LIBS_SITE = lib, GITHUB_PAT = Sys.getenv("GITHUB_PAT", Sys.getenv("GH_TOKEN", "")))',
-            'if (!requireNamespace("BiocManager", quietly = TRUE)) install.packages("BiocManager", repos = Sys.getenv("CRAN_MIRROR","https://cloud.r-project.org"), lib = lib, quiet = TRUE)',
-            'options(repos = BiocManager::repositories(), Ncpus = max(1L, parallel::detectCores() - 1L))',
-            'if (!requireNamespace("remotes", quietly = TRUE)) install.packages("remotes", lib = lib, quiet = TRUE)',
-            'if (!requireNamespace("desc", quietly = TRUE)) install.packages("desc", lib = lib, quiet = TRUE)',
 
-            '# --- Diagnose DESCRIPTION before install ---',
-            'desc_file <- file.path(pkgdir, "DESCRIPTION")',
-            'cat("Using DESCRIPTION at: ", desc_file, "\n", sep = "")',
-            'stopifnot(file.exists(desc_file))',
+            # >>> prevent compilation from source
+            'options(pkgType = "win.binary", install.packages.compile.from.source = "never")',
+            'Sys.setenv(R_LIBS_USER = lib, R_LIBS_SITE = lib,',
+            '           R_REMOTES_NO_ERRORS_FROM_WARNINGS = "true",',
+            '           R_COMPILE_AND_INSTALL_PACKAGES     = "never",',
+            '           R_WIN_NO_BUILD                     = "TRUE",',
+            '           MAKE = "")',
+
+            # Repositories: CRAN + Bioc (binary)
+            'cran <- Sys.getenv("CRAN_MIRROR", "https://cloud.r-project.org")',
+            'if (!requireNamespace("BiocManager", quietly = TRUE))',
+            '  install.packages("BiocManager", repos = cran, type = "win.binary", lib = lib, quiet = TRUE)',
+
+            # BiocManager::repositories() includes CRAN + Bioc; binary repos on Windows
+            'options(repos = BiocManager::repositories(), Ncpus = max(1L, parallel::detectCores() - 1L))',
+
+            # Tools needed to parse DESCRIPTION and install deps (binary)
+            'if (!requireNamespace("remotes", quietly = TRUE)) install.packages("remotes", repos = cran, type = "win.binary", lib = lib, quiet = TRUE)',
+            'if (!requireNamespace("desc",    quietly = TRUE)) install.packages("desc",    repos = cran, type = "win.binary", lib = lib, quiet = TRUE)',
+
+            # Validate DESCRIPTION early (also catches blank rows that caused earlier failures)
             'ok <- tryCatch(desc::desc_validate(pkgdir), error = identity)',
             'if (inherits(ok, "error")) stop("desc_validate error: ", conditionMessage(ok))',
+
+            # Inspect deps
             'deps <- desc::desc_get_deps(pkgdir)',
+            'bad  <- subset(deps, is.na(package) | package == "")',
+            'if (nrow(bad)) stop("Malformed dependency rows:\\n", paste(capture.output(print(bad)), collapse = "\\n"))',
             'print(deps)',
-            'bad <- subset(deps, is.na(package) | package == "")',
-            'if (nrow(bad)) stop("Malformed dependency entries (blank/NA package names) found in DESCRIPTION.\\n",
-                                  paste(capture.output(print(bad)), collapse = "\\n"))',
 
-            '# --- Install deps (avoid Suggests to reduce churn) ---',
-            'remotes::install_deps(pkgdir = pkgdir, dependencies = c("Depends","Imports","LinkingTo"),',
-            '                      upgrade = "never", lib = lib, quiet = FALSE)',
+            # Install only core deps (no Suggests) — binary only
+            'remotes::install_deps(pkgdir = pkgdir,',
+            '  dependencies = c("Depends","Imports","LinkingTo"),',
+            '  upgrade = "never", lib = lib, quiet = FALSE, type = getOption("pkgType"))',
 
+            # Show what landed
             'cat("\\nActive .libPaths():\\n"); print(.libPaths())',
             'ip <- installed.packages(lib.loc = lib, noCache = TRUE)[,c("Package","Version")]',
             'cat("\\nInstalled (first 25):\\n"); print(head(ip[order(ip[,"Package"]),], 25))',
             'q(status = 0)'
           )
 
-          $tmp = Join-Path $env:RUNNER_TEMP 'install-deps-validated.R'
-          $lines -join "`n" | Set-Content -Encoding UTF8 $tmp
+          $tmp = Join-Path $env:RUNNER_TEMP 'install-deps-binary.R'
+          $Utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+          [System.IO.File]::WriteAllText($tmp, ($lines -join "`n"), $Utf8NoBom)
 
           & $rscript --vanilla $tmp $libDir $pkgdir
+
 
 
 
