@@ -2,7 +2,7 @@ name: Golem Electron App - Description FILE Test
 
 on:
   push:
-    branches: [ feature/description-test ]
+    branches: [ feature/description-refine ]
     paths:
       - "electron/**"
       - "mygolemelectronapp/**"
